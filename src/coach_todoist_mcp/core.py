@@ -16,10 +16,6 @@ from zoneinfo import ZoneInfo
 
 from .client import TodoistClient, TodoistError
 
-# Пометки авторства — владелец должен видеть, кто тронул задачу: он сам или агент с его слов.
-AUTHORSHIP_CLOSED = "закрыта Claude со слов Василия"
-AUTHORSHIP_CREATED = "создана Claude со слов Василия"
-
 
 # ── помощники ────────────────────────────────────────────────────────────────
 
@@ -152,17 +148,17 @@ async def get_task(client: TodoistClient, task_id: str,
         comments = await client.get_paginated("/comments", params={"task_id": task_id})
         if comments:
             lines.append(f"  комментарии ({len(comments)}):")
-            lines += [f"    – {c.get('content', '')}" for c in comments]
+            lines += [f"    – [{c.get('id')}] {c.get('content', '')}" for c in comments]
     return "\n".join(lines)
 
 
 async def get_comments(client: TodoistClient, task_id: str) -> str:
-    """Прочитать комментарии задачи."""
+    """Прочитать комментарии задачи. id в квадратных скобках — для delete_comment."""
     comments = await client.get_paginated("/comments", params={"task_id": task_id})
     if not comments:
         return f"У задачи {task_id} комментариев нет."
     return f"Комментарии задачи {task_id} ({len(comments)}):\n" + "\n".join(
-        f"– {c.get('content', '')}" for c in comments
+        f"– [{c.get('id')}] {c.get('content', '')}" for c in comments
     )
 
 
@@ -206,19 +202,15 @@ async def completed_history(client: TodoistClient, since: str, until: str,
 
 # ── запись: задачи ─────────────────────────────────────────────────────────────
 
-async def add_task(client: TodoistClient, content: str, *, authorship: bool = False,
-                   **fields: Any) -> str:
+async def add_task(client: TodoistClient, content: str, **fields: Any) -> str:
     """Создать задачу или подзадачу (parent_id). due_string — словами по-русски."""
     payload = _task_payload({"content": content, **fields})
     task, note = await _create_one(client, payload)
-    if authorship:
-        await client.post("/comments", json={"task_id": task["id"], "content": AUTHORSHIP_CREATED})
     kind = "подзадача" if payload.get("parent_id") else "задача"
     return f"Создана {kind}: {brief(task)}{note}"
 
 
-async def add_tasks_bulk(client: TodoistClient, tasks: list[dict[str, Any]],
-                         authorship: bool = False) -> str:
+async def add_tasks_bulk(client: TodoistClient, tasks: list[dict[str, Any]]) -> str:
     """Создать пачку задач/подзадач. Каждый элемент — {content, ...поля}."""
     if not tasks:
         return "Пустой список — нечего создавать."
@@ -230,8 +222,6 @@ async def add_tasks_bulk(client: TodoistClient, tasks: list[dict[str, Any]],
             continue
         payload = _task_payload(item)
         task, note = await _create_one(client, payload)
-        if authorship:
-            await client.post("/comments", json={"task_id": task["id"], "content": AUTHORSHIP_CREATED})
         lines.append(brief(task) + note)
         count += 1
     return f"Создано задач: {count}\n" + "\n".join(lines)
@@ -247,12 +237,9 @@ async def update_task(client: TodoistClient, task_id: str, **fields: Any) -> str
     return f"Обновлено: {brief(task)}"
 
 
-async def complete_task(client: TodoistClient, task_id: str, reopen: bool = False,
-                        authorship: bool = True) -> str:
-    """Закрыть (или переоткрыть) задачу. По умолчанию оставляет пометку авторства.
+async def complete_task(client: TodoistClient, task_id: str, reopen: bool = False) -> str:
+    """Закрыть (или переоткрыть) задачу.
 
-    Порядок: сначала закрываем, потом пишем пометку — если закрытие упадёт,
-    не останется висячего комментария (комментировать закрытую задачу можно).
     У повторяющихся задач «закрыть» на деле передвигает срок на следующий раз —
     об этом честно сообщаем, а не врём «закрыта».
     """
@@ -267,12 +254,10 @@ async def complete_task(client: TodoistClient, task_id: str, reopen: bool = Fals
     except TodoistError:
         pass
     await client.post(f"/tasks/{task_id}/close")
-    if authorship:
-        await client.post("/comments", json={"task_id": task_id, "content": AUTHORSHIP_CLOSED})
     if recurring:
         return (f"Повторяющаяся задача {task_id} отмечена — Todoist передвинул её "
-                f"на следующий раз (не удалена). Пометка авторства оставлена.")
-    return f"Задача {task_id} закрыта, пометка авторства оставлена."
+                f"на следующий раз (не удалена).")
+    return f"Задача {task_id} закрыта."
 
 
 async def move_task(client: TodoistClient, task_id: str, project_id: str | None = None,
@@ -313,9 +298,35 @@ async def add_comment(client: TodoistClient, task_id: str, content: str) -> str:
     return f"Комментарий добавлен к задаче {task_id} (id {comment.get('id')})."
 
 
+async def delete_comment(client: TodoistClient, comment_id: str, confirm: bool = False) -> str:
+    """Удалить комментарий безвозвратно. Только при confirm=true.
+
+    id комментария берётся из get_comments или get_task(include_comments=true).
+    """
+    if not confirm:
+        return "Удаление не выполнено: нужен confirm=true. Удаление необратимо."
+    await client.delete(f"/comments/{comment_id}")
+    return f"Комментарий {comment_id} удалён."
+
+
+async def _find_label(client: TodoistClient, name: str) -> dict[str, Any] | None:
+    """Найти метку по имени — регистронезависимо, с «@» или без."""
+    wanted = str(name).strip().lstrip("@").casefold()
+    labels = await client.get_paginated("/labels", params={"limit": 200})
+    for label in labels:
+        if str(label.get("name", "")).casefold() == wanted:
+            return label
+    return None
+
+
 async def manage_structure(client: TodoistClient, action: str, name: str,
-                           project_id: str | None = None, parent_id: str | None = None) -> str:
-    """Создать проект / секцию / метку. action: create_project | create_section | create_label."""
+                           project_id: str | None = None, parent_id: str | None = None,
+                           new_name: str | None = None, confirm: bool = False) -> str:
+    """Создать проект / секцию / метку, переименовать или удалить метку.
+
+    action: create_project | create_section | create_label | rename_label | delete_label.
+    У меток Todoist правит по id, поэтому имя внутри превращается в id через GET /labels.
+    """
     if action == "create_project":
         body = {"name": name}
         if parent_id:
@@ -330,4 +341,25 @@ async def manage_structure(client: TodoistClient, action: str, name: str,
     if action == "create_label":
         label = await client.post("/labels", json={"name": name.lstrip("@")})
         return f"Создана метка @{label['name']}."
-    return f"Неизвестное действие «{action}». Доступно: create_project, create_section, create_label."
+    if action == "rename_label":
+        target = (new_name or "").strip().lstrip("@")
+        if not target:
+            return "Для переименования нужен new_name — новое имя метки."
+        label = await _find_label(client, name)
+        if not label:
+            return f"Метка @{name.lstrip('@')} не найдена."
+        old = label["name"]
+        updated = await client.post(f"/labels/{label['id']}", json={"name": target})
+        return (f"Метка @{old} переименована в @{updated.get('name', target)} — "
+                f"во всех задачах она обновилась сама.")
+    if action == "delete_label":
+        label = await _find_label(client, name)
+        if not label:
+            return f"Метка @{name.lstrip('@')} не найдена."
+        if not confirm:
+            return (f"Удаление не выполнено: нужен confirm=true. Метка @{label['name']} "
+                    f"исчезнет и снимется со всех задач, где стоит. Это необратимо.")
+        await client.delete(f"/labels/{label['id']}")
+        return f"Метка @{label['name']} удалена и снята со всех задач."
+    return (f"Неизвестное действие «{action}». Доступно: create_project, create_section, "
+            f"create_label, rename_label, delete_label.")

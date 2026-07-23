@@ -32,24 +32,41 @@ async def main() -> int:
         ])
         print("bulk:", out.splitlines()[0])
 
-        # 4. комментарий + чтение
-        await core.add_comment(client, task_id=pid, content="__smoke__ коммент")
+        # 4. комментарий + чтение (в выводе должен быть id — им же и удаляем)
+        added = await core.add_comment(client, task_id=pid, content="__smoke__ коммент")
+        cid = added.rsplit("id ", 1)[1].rstrip(").")
         comments = await core.get_comments(client, task_id=pid)
-        assert "__smoke__ коммент" in comments
-        print("comments read: ok")
+        assert "__smoke__ коммент" in comments and f"[{cid}]" in comments, comments
+        print("comments read: ok (id виден)")
 
         # 5. get_task с подзадачами и комментариями
         card = await core.get_task(client, task_id=pid, include_subtasks=True, include_comments=True)
         assert "подзадачи (3)" in card, card
         print("get_task card: ok (3 subtasks visible)")
 
-        # 6. quick_add + завершение с авторством + переоткрытие
+        # 6. удаление комментария (без confirm — отказ, с confirm — удалён)
+        assert "confirm=true" in await core.delete_comment(client, comment_id=cid)
+        print(await core.delete_comment(client, comment_id=cid, confirm=True))
+        assert cid not in await core.get_comments(client, task_id=pid)
+
+        # 7. quick_add + завершение + переоткрытие
         q = await client.post("/tasks/quick", json={"text": "__smoke__ quick завтра p3"})
         qid = q["id"]
         print(await core.complete_task(client, task_id=qid))
         print(await core.complete_task(client, task_id=qid, reopen=True))
+        # авторства больше нет — закрытие не должно плодить комментарии
+        assert "комментариев нет" in await core.get_comments(client, task_id=qid)
 
-        # 7. уборка
+        # 8. метка: создать → переименовать → удалить (имя ищется без учёта регистра и @)
+        print(await core.manage_structure(client, "create_label", "__smoke__метка"))
+        print(await core.manage_structure(client, "rename_label", "@__SMOKE__МЕТКА",
+                                          new_name="__smoke__метка2"))
+        assert "confirm=true" in await core.manage_structure(client, "delete_label", "__smoke__метка2")
+        print(await core.manage_structure(client, "delete_label", "__smoke__метка2", confirm=True))
+        assert "не найдена" in await core.manage_structure(client, "delete_label",
+                                                           "__smoke__метка2", confirm=True)
+
+        # 9. уборка
         await core.delete_task(client, task_id=pid, confirm=True)
         await core.delete_task(client, task_id=qid, confirm=True)
         print("cleanup: ok")

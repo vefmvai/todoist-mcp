@@ -50,7 +50,8 @@ async def get_task(task_id: str, include_subtasks: bool = True, include_comments
 
 @mcp.tool()
 async def get_comments(task_id: str) -> str:
-    """Прочитать все комментарии задачи (в т.ч. написанные Василием от руки)."""
+    """Прочитать все комментарии задачи (в т.ч. написанные Василием от руки).
+    В квадратных скобках — id комментария, он нужен для delete_comment."""
     return await _run(core.get_comments, task_id=task_id)
 
 
@@ -100,7 +101,7 @@ async def update_task(task_id: str, content: str = "", due_string: str = "", pri
 
 @mcp.tool()
 async def complete_task(task_id: str, reopen: bool = False) -> str:
-    """Закрыть задачу (или переоткрыть при reopen=true). При закрытии оставляет пометку авторства."""
+    """Закрыть задачу (или переоткрыть при reopen=true)."""
     return await _run(core.complete_task, task_id=task_id, reopen=reopen)
 
 
@@ -132,11 +133,24 @@ async def add_comment(task_id: str, content: str) -> str:
 
 
 @mcp.tool()
-async def manage_structure(action: str, name: str, project_id: str = "", parent_id: str = "") -> str:
-    """Создать проект/секцию/метку. action: create_project | create_section | create_label.
-    Для секции нужен project_id."""
+async def delete_comment(comment_id: str, confirm: bool = False) -> str:
+    """Удалить комментарий задачи безвозвратно. Только при confirm=true.
+    id комментария виден в get_comments и в get_task(include_comments=true)."""
+    return await _run(core.delete_comment, comment_id=comment_id, confirm=confirm)
+
+
+@mcp.tool()
+async def manage_structure(action: str, name: str, project_id: str = "", parent_id: str = "",
+                           new_name: str = "", confirm: bool = False) -> str:
+    """Управление структурой Todoist.
+    action: create_project | create_section | create_label | rename_label | delete_label.
+    name — имя проекта/секции/метки (метку можно писать с @ или без, регистр не важен).
+    Для секции нужен project_id, для вложенного проекта — parent_id.
+    rename_label: name — как метка называется сейчас, new_name — как назвать.
+    delete_label: срабатывает только с confirm=true — метка снимется со всех задач."""
     return await _run(core.manage_structure, action=action, name=name,
-                      project_id=project_id or None, parent_id=parent_id or None)
+                      project_id=project_id or None, parent_id=parent_id or None,
+                      new_name=new_name or None, confirm=confirm)
 
 
 def main() -> None:
