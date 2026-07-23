@@ -1,0 +1,17 @@
+# Секреты — токен живёт в Keychain (мак) и .env (сервер), не в репозитории
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Прочее
+.DS_Store
