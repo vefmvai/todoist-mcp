@@ -9,9 +9,12 @@
 
 from __future__ import annotations
 
+import os
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from .client import TodoistClient
+from .client import TodoistClient, TodoistError
 
 # Пометки авторства — владелец должен видеть, кто тронул задачу: он сам или агент с его слов.
 AUTHORSHIP_CLOSED = "закрыта Claude со слов Василия"
@@ -31,13 +34,51 @@ def _parse_labels(labels: Any) -> list[str]:
     return [str(x).strip().lstrip("@") for x in parts if str(x).strip()]
 
 
+def _format_due(due: dict[str, Any] | None) -> str:
+    """Срок в человекочитаемом виде и в местном времени.
+
+    У задач со временем Todoist отдаёт `date` в UTC (…Z) плюс поле `timezone`.
+    Конвертируем по этому полю (иначе агент видит время по Гринвичу, минус 3 часа
+    от московского). Задачи-даты без времени и «плавающее» время отдаём как есть.
+    """
+    if not due:
+        return "без даты"
+    raw = due.get("date") or ""
+    if "T" not in raw:  # обычная дата без времени
+        return raw or "без даты"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return due.get("string") or raw
+    if dt.tzinfo is not None:  # UTC → местный пояс задачи (или COACH_TZ)
+        tzname = due.get("timezone") or os.environ.get("COACH_TZ") or "Europe/Moscow"
+        try:
+            dt = dt.astimezone(ZoneInfo(tzname))
+        except Exception:
+            pass
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
 def brief(task: dict[str, Any]) -> str:
     """Однострочное описание задачи для человека."""
-    due = (task.get("due") or {}).get("date") or "без даты"
+    due = _format_due(task.get("due"))
     labels = " ".join(f"@{label}" for label in task.get("labels") or [])
     priority = task.get("priority") or 1  # 4 = p1 в UI
     flag = f" p{5 - priority}" if priority > 1 else ""
     return f"[{task['id']}] {task['content']} — {due}{flag} {labels}".rstrip()
+
+
+async def _create_one(client: TodoistClient, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Создать задачу; если упала из-за дедлайна (Premium-фича на Free — 403),
+    пересоздать без дедлайна и вернуть пометку, а не терять задачу целиком."""
+    try:
+        return await client.post("/tasks", json=payload), ""
+    except TodoistError:
+        if "deadline_date" in payload:
+            trimmed = {k: v for k, v in payload.items() if k != "deadline_date"}
+            task = await client.post("/tasks", json=trimmed)
+            return task, " (дедлайн — Premium-фича Todoist, создал без него)"
+        raise
 
 
 def _task_payload(args: dict[str, Any]) -> dict[str, Any]:
@@ -80,6 +121,22 @@ async def get_task(client: TodoistClient, task_id: str,
     """Карточка задачи + при желании подзадачи и комментарии."""
     task = await client.get(f"/tasks/{task_id}")
     lines = [brief(task)]
+    # где лежит задача — проект (и секция, если есть)
+    place = ""
+    if task.get("project_id"):
+        try:
+            project = await client.get(f"/projects/{task['project_id']}")
+            place = project.get("name", task["project_id"])
+        except TodoistError:
+            place = task["project_id"]
+    if task.get("section_id"):
+        try:
+            section = await client.get(f"/sections/{task['section_id']}")
+            place += f" → {section.get('name', task['section_id'])}"
+        except TodoistError:
+            place += f" → секция {task['section_id']}"
+    if place:
+        lines.append(f"  проект: {place}")
     if task.get("description"):
         lines.append(f"  описание: {task['description']}")
     if include_subtasks:
@@ -110,14 +167,14 @@ async def get_structure(client: TodoistClient) -> str:
     projects = await client.get_paginated("/projects", params={"limit": 100})
     sections = await client.get_paginated("/sections", params={"limit": 200})
     labels = await client.get_paginated("/labels", params={"limit": 200})
-    by_project: dict[str, list[str]] = {}
+    by_project: dict[str, list[dict[str, Any]]] = {}
     for section in sections:
-        by_project.setdefault(section["project_id"], []).append(section["name"])
-    lines = ["Проекты и секции:"]
+        by_project.setdefault(section["project_id"], []).append(section)
+    lines = ["Проекты и секции (id нужен, чтобы класть задачу в проект/секцию):"]
     for project in projects:
-        names = by_project.get(project["id"], [])
-        suffix = " → " + ", ".join(names) if names else ""
-        lines.append(f"  [{project['id']}] {project['name']}{suffix}")
+        lines.append(f"  [{project['id']}] {project['name']}")
+        for section in by_project.get(project["id"], []):
+            lines.append(f"      └ секция [{section['id']}] {section['name']}")
     lines.append("Метки: " + ", ".join(f"@{label['name']}" for label in labels))
     return "\n".join(lines)
 
@@ -149,11 +206,11 @@ async def add_task(client: TodoistClient, content: str, *, authorship: bool = Fa
                    **fields: Any) -> str:
     """Создать задачу или подзадачу (parent_id). due_string — словами по-русски."""
     payload = _task_payload({"content": content, **fields})
-    task = await client.post("/tasks", json=payload)
+    task, note = await _create_one(client, payload)
     if authorship:
         await client.post("/comments", json={"task_id": task["id"], "content": AUTHORSHIP_CREATED})
     kind = "подзадача" if payload.get("parent_id") else "задача"
-    return f"Создана {kind}: {brief(task)}"
+    return f"Создана {kind}: {brief(task)}{note}"
 
 
 async def add_tasks_bulk(client: TodoistClient, tasks: list[dict[str, Any]],
@@ -161,17 +218,19 @@ async def add_tasks_bulk(client: TodoistClient, tasks: list[dict[str, Any]],
     """Создать пачку задач/подзадач. Каждый элемент — {content, ...поля}."""
     if not tasks:
         return "Пустой список — нечего создавать."
-    created = []
+    lines = []
+    count = 0
     for item in tasks:
         content = item.get("content")
         if not content:
             continue
         payload = _task_payload(item)
-        task = await client.post("/tasks", json=payload)
+        task, note = await _create_one(client, payload)
         if authorship:
             await client.post("/comments", json={"task_id": task["id"], "content": AUTHORSHIP_CREATED})
-        created.append(task)
-    return f"Создано задач: {len(created)}\n" + "\n".join(brief(t) for t in created)
+        lines.append(brief(task) + note)
+        count += 1
+    return f"Создано задач: {count}\n" + "\n".join(lines)
 
 
 async def update_task(client: TodoistClient, task_id: str, **fields: Any) -> str:
@@ -186,14 +245,29 @@ async def update_task(client: TodoistClient, task_id: str, **fields: Any) -> str
 
 async def complete_task(client: TodoistClient, task_id: str, reopen: bool = False,
                         authorship: bool = True) -> str:
-    """Закрыть (или переоткрыть) задачу. По умолчанию оставляет пометку авторства."""
+    """Закрыть (или переоткрыть) задачу. По умолчанию оставляет пометку авторства.
+
+    Порядок: сначала закрываем, потом пишем пометку — если закрытие упадёт,
+    не останется висячего комментария (комментировать закрытую задачу можно).
+    У повторяющихся задач «закрыть» на деле передвигает срок на следующий раз —
+    об этом честно сообщаем, а не врём «закрыта».
+    """
     task_id = str(task_id)
     if reopen:
         await client.post(f"/tasks/{task_id}/reopen")
         return f"Задача {task_id} снова открыта."
+    recurring = False
+    try:
+        task = await client.get(f"/tasks/{task_id}")
+        recurring = bool((task.get("due") or {}).get("is_recurring"))
+    except TodoistError:
+        pass
+    await client.post(f"/tasks/{task_id}/close")
     if authorship:
         await client.post("/comments", json={"task_id": task_id, "content": AUTHORSHIP_CLOSED})
-    await client.post(f"/tasks/{task_id}/close")
+    if recurring:
+        return (f"Повторяющаяся задача {task_id} отмечена — Todoist передвинул её "
+                f"на следующий раз (не удалена). Пометка авторства оставлена.")
     return f"Задача {task_id} закрыта, пометка авторства оставлена."
 
 

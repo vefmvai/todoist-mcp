@@ -1,6 +1,6 @@
 [project]
 name = "coach-todoist-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Свой MCP-сервер к Todoist для агента-коуча: подзадачи, комментарии и весь практичный набор поверх unified API v1."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -9,6 +9,7 @@ authors = [{ name = "vefmv" }]
 dependencies = [
     "httpx>=0.27",
     "mcp>=1.2",
+    "tzdata",
 ]
 
 [project.scripts]
