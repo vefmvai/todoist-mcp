@@ -50,8 +50,12 @@ def _format_due(due: dict[str, Any] | None) -> str:
         dt = datetime.fromisoformat(raw)
     except ValueError:
         return due.get("string") or raw
-    if dt.tzinfo is not None:  # UTC → местный пояс задачи (или COACH_TZ)
-        tzname = due.get("timezone") or os.environ.get("COACH_TZ") or "Europe/Moscow"
+    if dt.tzinfo is not None:  # UTC → пояс, в котором сейчас живёт владелец
+        # COACH_TZ (где Василий сейчас) в приоритете — так вывод совпадает с
+        # приложением: Todoist показывает время в текущем поясе аккаунта.
+        # Переехал на Бали → COACH_TZ=Asia/Makassar, и время едет за ним,
+        # хотя сервер остаётся в Москве. due.timezone — запасной вариант.
+        tzname = os.environ.get("COACH_TZ") or due.get("timezone") or "Europe/Moscow"
         try:
             dt = dt.astimezone(ZoneInfo(tzname))
         except Exception:
