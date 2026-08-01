@@ -59,10 +59,10 @@ def _format_due(due: dict[str, Any] | None) -> str:
     except ValueError:
         return due.get("string") or raw
     if dt.tzinfo is not None:  # UTC → пояс, в котором сейчас живёт владелец
-        # COACH_TZ (где Василий сейчас) в приоритете — так вывод совпадает с
-        # приложением: Todoist показывает время в текущем поясе аккаунта.
-        # Переехал на Бали → COACH_TZ=Asia/Makassar, и время едет за ним,
-        # хотя сервер остаётся в Москве. due.timezone — запасной вариант.
+        # COACH_TZ (где человек сейчас) в приоритете — так вывод совпадает
+        # с приложением: Todoist показывает время в текущем поясе аккаунта.
+        # Уехал в другой пояс → поменял переменную, и время едет за ним,
+        # хотя сервер остаётся на месте. due.timezone — запасной вариант.
         tzname = os.environ.get("COACH_TZ") or due.get("timezone") or "Europe/Moscow"
         try:
             dt = dt.astimezone(ZoneInfo(tzname))
