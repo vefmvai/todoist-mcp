@@ -71,8 +71,13 @@ async def main() -> int:
         await core.delete_task(client, task_id=qid, confirm=True)
         print("cleanup: ok")
 
-    print("\nSMOKE PASSED ✅ (tools registered:",
-          len(await server.mcp.list_tools()), ")")
+    # 10. кнопки объявляются из манифеста, а не руками: регистрируем и считаем.
+    # Раньше здесь звался server.mcp напрямую — после этапа 14 он пуст до
+    # register(), и молчаливый ноль читался бы как «всё хорошо».
+    from coach_todoist_mcp import plan, toggles
+    registered = server.register(server.mcp, plan.current(), toggles.load())
+    assert registered, "манифест не дал ни одной кнопки"
+    print("\nSMOKE PASSED ✅ (кнопок объявлено:", len(registered), ")")
     return 0
 
 
