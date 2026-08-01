@@ -388,6 +388,13 @@ TOOLS: tuple[Tool, ...] = (
             _text(a, "filter_id"), confirm=a.get("confirm", False),
         ),
     ),
+    Tool(
+        name="проверка_одного_дома",
+        summary="Временная кнопка: проверить, что объявление одно",
+        description="Тестовая кнопка этапа 14. Убирается сразу после проверки.",
+        fields=(Field("эхо", description="Что повторить"),),
+        run=lambda c, a: core.find_tasks(c, "today", 1),
+    ),
 )
 
 
