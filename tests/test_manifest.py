@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from mcp.server.fastmcp import FastMCP
 
-from coach_todoist_mcp import core, plan, server, table, toggles, tools
+from todoist_mcp import core, plan, server, table, toggles, tools
 
 FREE = plan.Plan(name="free", current={"deadlines": False, "durations": False,
                                        "comments": True, "max_filters": 3}, source="api")

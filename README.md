@@ -1,4 +1,4 @@
-# coach-todoist-mcp
+# todoist-mcp
 
 Свой MCP-сервер к **Todoist** для агента-коуча. Даёт то, чего нет в официальном удалённом
 MCP (`ai.todoist.net/mcp`): **подзадачи**, **чтение и запись комментариев** и полный
@@ -13,7 +13,7 @@ MCP (`ai.todoist.net/mcp`): **подзадачи**, **чтение и запис
 
 - `client.py` — `TodoistClient`: async-обёртка над httpx к `api.todoist.com/api/v1`.
 - `core.py` — функции-«кнопки» (без MCP): задачи, подзадачи, комментарии, структура.
-- `server.py` — обёртка MCP (FastMCP, транспорт stdio). Точка входа `coach-todoist-mcp`.
+- `server.py` — обёртка MCP (FastMCP, транспорт stdio). Точка входа `todoist-mcp`.
 
 ## Инструменты
 
@@ -41,7 +41,7 @@ MCP (`ai.todoist.net/mcp`): **подзадачи**, **чтение и запис
 
 ```bash
 export TODOIST_API_TOKEN=xxxxxxxx
-uv run coach-todoist-mcp        # или: python -m coach_todoist_mcp.server
+uv run todoist-mcp        # или: python -m todoist_mcp.server
 ```
 
 ### Подключение к Claude Code (мак)

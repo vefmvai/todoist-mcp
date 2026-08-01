@@ -1,7 +1,7 @@
 [project]
-name = "coach-todoist-mcp"
+name = "todoist-mcp"
 version = "0.3.0"
-description = "Свой MCP-сервер к Todoist для агента-коуча: подзадачи, комментарии и весь практичный набор поверх unified API v1."
+description = "MCP-сервер к Todoist: задачи, подзадачи, комментарии, структура, фильтры и статистика поверх unified API v1. Ядро отделено от адаптеров — им пользуется и отдельный процесс, и встроенный агент."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -20,11 +20,12 @@ dependencies = [
 ]
 
 [project.scripts]
-coach-todoist-mcp = "coach_todoist_mcp.server:main"
+todoist-mcp = "todoist_mcp.server:main"
+todoist-mcp-tools = "todoist_mcp.table:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/coach_todoist_mcp"]
+packages = ["src/todoist_mcp"]

@@ -1,4 +1,4 @@
-"""coach-todoist-mcp — свой MCP-сервер к Todoist для агента-коуча.
+"""todoist-mcp — MCP-сервер к Todoist.
 
 Ядро (client + core) переиспользуется ботом напрямую, минуя MCP.
 """

@@ -14,7 +14,7 @@
 в своей таблице не показывает вовсе. Значит правила поменялись, и пометка
 теперь указывает в пустоту: поле молча считалось бы недоступным навсегда.
 
-Запуск: `python -m coach_todoist_mcp.table`
+Запуск: `python -m todoist_mcp.table`
 """
 
 from __future__ import annotations

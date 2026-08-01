@@ -9,8 +9,8 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from coach_todoist_mcp import TodoistClient, core
-from coach_todoist_mcp import server  # проверяем, что MCP-обёртка (FastMCP) импортируется
+from todoist_mcp import TodoistClient, core
+from todoist_mcp import server  # проверяем, что MCP-обёртка (FastMCP) импортируется
 
 
 async def main() -> int:
@@ -74,7 +74,7 @@ async def main() -> int:
     # 10. кнопки объявляются из манифеста, а не руками: регистрируем и считаем.
     # Раньше здесь звался server.mcp напрямую — после этапа 14 он пуст до
     # register(), и молчаливый ноль читался бы как «всё хорошо».
-    from coach_todoist_mcp import plan, toggles
+    from todoist_mcp import plan, toggles
     registered = server.register(server.mcp, plan.current(), toggles.load())
     assert registered, "манифест не дал ни одной кнопки"
     print("\nSMOKE PASSED ✅ (кнопок объявлено:", len(registered), ")")
