@@ -21,7 +21,18 @@ LIST_KEYS = ("results", "items")
 
 
 class TodoistError(RuntimeError):
-    """Ошибка обращения к Todoist (не 2xx) с понятным текстом."""
+    """Ошибка обращения к Todoist (не 2xx) с понятным текстом.
+
+    `retryable` отвечает на вопрос, который задаёт вызывающий: «это связь
+    моргнула или запрос неправильный?». Без него автоматизации не могут
+    отличить одно от другого — и либо повторяют бессмысленное, либо сдаются
+    на ровном месте. Куплено прогоном 01.08.2026: обрыв соединения посреди
+    работы канала комментариев выглядел как «ничего не изменилось».
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class TodoistClient:
@@ -53,9 +64,18 @@ class TodoistClient:
             response.raise_for_status()
         except httpx.HTTPStatusError as err:
             body = err.response.text[:300]
-            raise TodoistError(f"Todoist {err.response.status_code} на {method} {path}: {body}") from err
+            code = err.response.status_code
+            raise TodoistError(
+                f"Todoist {code} на {method} {path}: {body}",
+                # 429 — «слишком часто», 5xx — «мне сейчас плохо»: и то и другое
+                # проходит само. 4xx означает, что запрос неправильный, и повтор
+                # его правильным не сделает.
+                retryable=code == 429 or code >= 500,
+            ) from err
         except httpx.HTTPError as err:
-            raise TodoistError(f"Сеть недоступна на {method} {path}: {err}") from err
+            raise TodoistError(
+                f"Сеть недоступна на {method} {path}: {err}", retryable=True
+            ) from err
         if response.status_code == 204 or not response.content:
             return None
         return response.json()

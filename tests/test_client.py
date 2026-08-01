@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+
 import pytest
 
 from todoist_mcp import client as client_module
@@ -94,3 +96,54 @@ def test_порядок_кандидатов_объявлен():
     """Сначала частая форма, потом редкая: иначе на каждом ответе лишний промах."""
     assert LIST_KEYS == ("results", "items")
     assert client_module.LIST_KEYS is LIST_KEYS
+
+
+# --- «связь моргнула» против «запрос кривой» ---
+
+class ПоддельныйHTTP:
+    """Вместо сети — заранее назначенный исход запроса."""
+
+    def __init__(self, исход):
+        self.исход = исход
+
+    async def request(self, method, path, **kwargs):
+        raise self.исход
+
+
+def _ошибка(исход):
+    c = TodoistClient(token="test-token")
+    c._http = ПоддельныйHTTP(исход)  # type: ignore[assignment]
+    with pytest.raises(client_module.TodoistError) as поймано:
+        asyncio.run(c.request("GET", "/tasks"))
+    return поймано.value
+
+
+def _ответ(код):
+    request = httpx.Request("GET", "https://api.todoist.com/api/v1/tasks")
+    response = httpx.Response(код, request=request, text="beda")
+    return httpx.HTTPStatusError("нет", request=request, response=response)
+
+
+def test_обрыв_связи_повторяем():
+    """Обрыв посреди работы обязан отличаться от отказа по существу.
+
+    Куплено прогоном 01.08.2026: канал комментариев не смог снять состояние
+    задачи после работы, поймал этот тип ошибки как «ничего не изменилось»
+    и оставил шесть созданных подзадач без записи в журнале — то есть
+    без возможности отката.
+    """
+    беда = _ошибка(httpx.ConnectError("соединение сброшено"))
+    assert беда.retryable is True
+
+
+@pytest.mark.parametrize("код, повторять", [(400, False), (403, False), (404, False),
+                                            (429, True), (500, True), (503, True)])
+def test_коды_ответа_разбираются_по_смыслу(код, повторять):
+    assert _ошибка(_ответ(код)).retryable is повторять
+
+
+def test_по_умолчанию_не_повторяем():
+    """Ошибка без токена — не повод долбить в сеть."""
+    with pytest.raises(client_module.TodoistError) as поймано:
+        TodoistClient(token="")
+    assert поймано.value.retryable is False
