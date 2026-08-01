@@ -14,6 +14,11 @@ import httpx
 
 API_BASE = "https://api.todoist.com/api/v1"
 
+# Под каким ключом Todoist кладёт список в ответ. Их два, и это не наша выдумка:
+# `/tasks`, `/projects`, `/comments` отдают `results`, а завершённые задачи —
+# `items`. Порядок значим: сначала частый, потом редкий.
+LIST_KEYS = ("results", "items")
+
 
 class TodoistError(RuntimeError):
     """Ошибка обращения к Todoist (не 2xx) с понятным текстом."""
@@ -66,15 +71,31 @@ class TodoistClient:
         return await self.request("DELETE", path, **kwargs)
 
     async def get_paginated(self, path: str, params: dict[str, Any] | None = None,
-                            key: str = "results", cap: int = 300) -> list[dict[str, Any]]:
-        """Собрать все страницы (Todoist отдаёт `results` + `next_cursor`)."""
+                            key: str | tuple[str, ...] = LIST_KEYS,
+                            cap: int = 300) -> list[dict[str, Any]]:
+        """Собрать все страницы. Список лежит под `results` ЛИБО под `items`.
+
+        Почему кандидаты, а не одно имя. Большинство путей отдаёт `results`,
+        а `/tasks/completed/by_completion_date` — `items`. Раньше это знание
+        жило в двух местах: параметр `key` по умолчанию стоял на `results`,
+        а `core.completed_history` разбирал ответ руками. Ночной снимок про
+        вторую форму не знал и молча собирал пустоту: 0 закрытых задач при
+        1826 закрытых по счётчику Todoist (найдено прогоном 01.08).
+
+        Пустая таблица выглядит как «данных нет», а означает «мы их не туда
+        просили» — поэтому имя ключа перестаёт быть догадкой места вызова.
+        """
         params = dict(params or {})
+        candidates = (key,) if isinstance(key, str) else tuple(key)
         items: list[dict[str, Any]] = []
         while True:
             data = await self.get(path, params=params)
             if isinstance(data, list):
                 return data
-            items.extend(data.get(key, []))
+            for name in candidates:
+                if name in data:
+                    items.extend(data[name] or [])
+                    break
             cursor = data.get("next_cursor")
             if not cursor or len(items) >= cap:
                 return items[:cap]

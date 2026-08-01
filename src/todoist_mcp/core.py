@@ -219,8 +219,10 @@ async def completed_history(client: TodoistClient, since: str, until: str,
     }
     if project_id:
         params["project_id"] = project_id
-    data = await client.get("/tasks/completed/by_completion_date", params=params)
-    items = data.get("items", data.get("results", [])) if isinstance(data, dict) else data
+    # Разбор ответа — забота клиента: под каким ключом лежит список, знает он один.
+    items = await client.get_paginated(
+        "/tasks/completed/by_completion_date", params=params, cap=params["limit"]
+    )
     if not items:
         return f"С {since} по {until} завершённых задач нет."
     lines = [f"Завершено с {since} по {until} ({len(items)}):"]
