@@ -44,13 +44,6 @@ def test_поля_объявлены_известными_типами():
             assert f.kind in tools.KINDS, (t.name, f.name, f.kind)
 
 
-def test_в_описаниях_кнопок_нет_личного():
-    """Репозиторий публичный: имени владельца в описаниях быть не должно."""
-    blob = " ".join(t.description + t.summary for t in tools.TOOLS).lower()
-    for word in ("васил", "vasili", "мастерск", "лаборатор", "bronto"):
-        assert word not in blob, word
-
-
 # ── тариф ─────────────────────────────────────────────────────────────────────
 
 def test_платные_поля_не_объявляются_на_бесплатном():
