@@ -83,3 +83,33 @@ async def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
+
+
+# ── снятие срока (поймано вживую 05.08.2026) ─────────────────────────────────
+
+
+def test_без_даты_переводится_в_no_date():
+    """Todoist понимает снятие срока только английским «no date».
+
+    Русское «без даты» вернуло 400 Invalid date format, хотя описание поля
+    обещает срок словами по-русски, а пользуется инструментом русскоязычный агент.
+    """
+    from todoist_mcp.core import _task_payload
+
+    for сказано in ("без даты", "Без даты", "  нет даты  ", "убрать дату", "снять дату"):
+        assert _task_payload({"due_string": сказано})["due_string"] == "no date", сказано
+
+
+def test_обычный_срок_не_трогаем():
+    from todoist_mcp.core import _task_payload
+
+    for сказано in ("завтра", "в пятницу", "каждый пн", "10 августа"):
+        payload = _task_payload({"due_string": сказано})
+        assert payload["due_string"] == сказано
+        assert payload["due_lang"] == "ru"
+
+
+def test_английское_no_date_проходит_как_было():
+    from todoist_mcp.core import _task_payload
+
+    assert _task_payload({"due_string": "no date"})["due_string"] == "no date"

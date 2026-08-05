@@ -111,6 +111,23 @@ async def _create_one(client: TodoistClient, payload: dict[str, Any]) -> tuple[d
     return await client.post("/tasks", json=payload), note
 
 
+# Снятие срока Todoist понимает единственной фразой — английской `no date`,
+# и русского разбора для неё у него нет: `due_lang: ru` тут не помогает.
+# Поймано вживую 05.08.2026 — «без даты» вернуло 400 Invalid date format.
+#
+# Беда не косметическая: инструментом пользуется агент, который говорит
+# по-русски, а описание поля прямо обещает «срок словами по-русски». Значит
+# на просьбу «убери дату» он получал бы отказ и, скорее всего, сдался бы
+# или начал выдумывать формат.
+СНЯТЬ_ДАТУ = {"без даты", "нет даты", "убрать дату", "снять дату", "никогда",
+              "no date", "none"}
+
+
+def _снять_дату(строка: str) -> str:
+    """Русские способы сказать «даты нет» → то единственное, что понимает Todoist."""
+    return "no date" if строка.strip().lower() in СНЯТЬ_ДАТУ else строка
+
+
 def _task_payload(args: dict[str, Any]) -> dict[str, Any]:
     """Собрать тело задачи из общих полей (для add/update)."""
     payload: dict[str, Any] = {}
@@ -118,7 +135,7 @@ def _task_payload(args: dict[str, Any]) -> dict[str, Any]:
         if args.get(key):
             payload[key] = args[key]
     if args.get("due_string"):
-        payload["due_string"] = args["due_string"]
+        payload["due_string"] = _снять_дату(args["due_string"])
         payload["due_lang"] = "ru"
     if args.get("deadline_date"):
         payload["deadline_date"] = args["deadline_date"]  # YYYY-MM-DD

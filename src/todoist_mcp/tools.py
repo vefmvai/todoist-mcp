@@ -105,7 +105,7 @@ _TASK_FIELDS = ("project_id", "section_id", "parent_id", "due_string",
 
 # Поля, общие для add_task и update_task. Объявляются один раз, потому что
 # именно их расхождение и было первой найденной поломкой.
-_DUE = Field("due_string", description="Срок словами по-русски: «завтра», «в пятницу», «каждый пн»")
+_DUE = Field("due_string", description="Срок словами по-русски: «завтра», «в пятницу», «каждый пн». Снять срок совсем — «без даты»")
 _DEADLINE = Field("deadline_date", description="Жёсткий дедлайн, YYYY-MM-DD (отдельно от срока)",
                   feature="deadlines")
 _PRIORITY = Field("priority", "int", "Приоритет: 4 — самый высокий (p1 в приложении), 1 — обычный")
