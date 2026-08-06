@@ -31,8 +31,17 @@ PREMIUM_FIELDS = {
 
 # ── помощники ────────────────────────────────────────────────────────────────
 
+СНЯТЬ_МЕТКИ = {"без меток", "без метки", "нет меток", "снять метки", "-"}
+
+
 def _parse_labels(labels: Any) -> list[str]:
-    """Принять список или строку «актив, ждёт» → ['актив','ждёт'] (без @)."""
+    """Принять список или строку «дом, звонки» → ['дом','звонки'] (без @).
+
+    Пустая строка и слова снятия дают пустой список — то есть «снять все метки».
+    Отличать «снять» от «не трогать» — работа вызывающего: он смотрит на `None`.
+    """
+    if isinstance(labels, str) and labels.strip().lower() in СНЯТЬ_МЕТКИ:
+        return []
     if not labels:
         return []
     if isinstance(labels, str):
@@ -141,9 +150,13 @@ def _task_payload(args: dict[str, Any]) -> dict[str, Any]:
         payload["deadline_date"] = args["deadline_date"]  # YYYY-MM-DD
     if args.get("priority"):
         payload["priority"] = int(args["priority"])
-    labels = _parse_labels(args.get("labels"))
-    if labels:
-        payload["labels"] = labels
+    # Метки: пустая строка и «без меток» СНИМАЮТ все метки, а не «ничего
+    # не меняем». Раньше `if labels:` глотал и то и другое, и снять метку было
+    # нечем вообще — ровно та же дыра, что была у снятия срока: агент говорит
+    # по-русски «убери метки», а инструмент молча делает вид, что сделал.
+    # `None` (поле не передали) по-прежнему означает «не трогать».
+    if args.get("labels") is not None:
+        payload["labels"] = _parse_labels(args["labels"])
     if args.get("duration"):
         payload["duration"] = int(args["duration"])
         payload["duration_unit"] = args.get("duration_unit") or "minute"
@@ -153,7 +166,7 @@ def _task_payload(args: dict[str, Any]) -> dict[str, Any]:
 # ── чтение ───────────────────────────────────────────────────────────────────
 
 async def find_tasks(client: TodoistClient, filter: str = "today", limit: int = 30) -> str:
-    """Задачи по фильтру Todoist (today, overdue, 7 days, @актив, #Личное, no date…)."""
+    """Задачи по фильтру Todoist (today, overdue, 7 days, @дом, #Личное, no date…)."""
     query = filter or "today"
     limit = min(int(limit or 30), 100)
     data = await client.get("/tasks/filter", params={"query": query, "limit": limit})
@@ -392,7 +405,7 @@ async def manage_filters(client: TodoistClient, action: str = "list", name: str 
     """Сохранённые фильтры: посмотреть, завести, поправить, удалить.
 
     action: list | create | update | delete.
-    Фильтр — сохранённый запрос вроде «no date & !@когда-нибудь». На бесплатном
+    Фильтр — сохранённый запрос вроде «no date & !@отпуск». На бесплатном
     тарифе слотов три, и Todoist их не стережёт: четвёртый создаётся молча
     (проверено 01.08.2026), поэтому счёт ведём сами.
     """

@@ -113,3 +113,29 @@ def test_английское_no_date_проходит_как_было():
     from todoist_mcp.core import _task_payload
 
     assert _task_payload({"due_string": "no date"})["due_string"] == "no date"
+
+
+# ── снятие меток (поймано вживую 06.08.2026) ─────────────────────────────────
+
+
+def test_пустые_метки_снимают_все():
+    """`if labels:` глотал и пустую строку, и «без меток» — снять метку было
+    нечем вообще. Та же дыра, что была у снятия срока днём раньше."""
+    from todoist_mcp.core import _task_payload
+
+    for сказано in ("", "без меток", "Нет меток", "  снять метки  ", "-", []):
+        payload = _task_payload({"labels": сказано})
+        assert payload["labels"] == [], repr(сказано)
+
+
+def test_метки_не_переданы_значит_не_трогаем():
+    """Отличие «снять» от «не трогать»: поля нет — ключа в теле запроса нет."""
+    from todoist_mcp.core import _task_payload
+
+    assert "labels" not in _task_payload({"content": "просто текст"})
+
+
+def test_обычные_метки_разбираются_как_были():
+    from todoist_mcp.core import _task_payload
+
+    assert _task_payload({"labels": "@дом, звонки"})["labels"] == ["дом", "звонки"]
