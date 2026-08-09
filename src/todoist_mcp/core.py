@@ -239,9 +239,42 @@ async def get_structure(client: TodoistClient) -> str:
     return "\n".join(lines)
 
 
+def _день_закрытия(raw: str) -> str:
+    """День закрытия в МЕСТНОМ поясе, а не по Гринвичу.
+
+    `completed_at` приходит в UTC (`2026-08-08T22:13:49Z`), а границы периода
+    Todoist понимает в поясе аккаунта. Печатать из UTC первые десять символов
+    значит смешивать две шкалы: задача, закрытая 09.08 в 01:13 по Москве,
+    показывалась как «08.08» — и это не косметика. Именно из-за неё запрос
+    «что закрыто восьмого» выглядел сломанным: он честно отвечал «ничего»
+    (закрывали-то девятого ночью), а соседний запрос печатал те же задачи
+    с датой «08.08». Разобрано 09.08.2026; тот же перевод уже делает
+    `_format_due` — здесь его просто не было.
+    """
+    if not raw:
+        return "?"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw[:10]
+    if dt.tzinfo is None:
+        return raw[:10]
+    tzname = os.environ.get("COACH_TZ") or "Europe/Moscow"
+    try:
+        dt = dt.astimezone(ZoneInfo(tzname))
+    except Exception:
+        pass
+    return dt.strftime("%Y-%m-%d")
+
+
 async def completed_history(client: TodoistClient, since: str, until: str,
                             project_id: str | None = None, limit: int = 50) -> str:
-    """История завершённых задач за период (since/until — YYYY-MM-DD)."""
+    """История завершённых задач за период (since/until — YYYY-MM-DD).
+
+    Границы — местное время, и день берётся целиком: с 00:00:00 до 23:59:59.
+    Todoist понимает наивную дату в поясе аккаунта, поэтому `since == until`
+    это законный запрос «за одни сутки», а не пустой отрезок.
+    """
     params: dict[str, Any] = {
         "since": f"{since}T00:00:00",
         "until": f"{until}T23:59:59",
@@ -257,8 +290,7 @@ async def completed_history(client: TodoistClient, since: str, until: str,
         return f"С {since} по {until} завершённых задач нет."
     lines = [f"Завершено с {since} по {until} ({len(items)}):"]
     for t in items:
-        done = (t.get("completed_at") or "")[:10]
-        lines.append(f"  ✓ {t.get('content', '')} — {done}")
+        lines.append(f"  ✓ {t.get('content', '')} — {_день_закрытия(t.get('completed_at') or '')}")
     return "\n".join(lines)
 
 
