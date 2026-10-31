@@ -16,8 +16,10 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import people as people_module
 from . import plan as plan_module
 from .client import TodoistClient, TodoistError
+from .people import Люди
 
 # Поля, которых на бесплатном тарифе нет, и фича, которая их включает.
 # Ведут себя по-разному, и оба поведения плохие: дедлайн роняет весь запрос
@@ -80,13 +82,23 @@ def _format_due(due: dict[str, Any] | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
-def brief(task: dict[str, Any]) -> str:
-    """Однострочное описание задачи для человека."""
+def brief(task: dict[str, Any], люди: Люди | None = None) -> str:
+    """Однострочное описание задачи для человека.
+
+    С `люди` строка знает, чья задача: «→ я», «→ Анна». Без них — как раньше:
+    у личных проектов исполнителя не бывает, и печатать там нечего.
+    """
     due = _format_due(task.get("due"))
     labels = " ".join(f"@{label}" for label in task.get("labels") or [])
     priority = task.get("priority") or 1  # 4 = p1 в UI
     flag = f" p{5 - priority}" if priority > 1 else ""
-    return f"[{task['id']}] {task['content']} — {due}{flag} {labels}".rstrip()
+    who = ""
+    if люди is not None:
+        if task.get("responsible_uid"):
+            who = f" → {люди.имя(str(task['responsible_uid']))}"
+        elif люди.общий(task.get("project_id")):
+            who = " → без исполнителя"
+    return f"[{task['id']}] {task['content']}{who} — {due}{flag} {labels}".rstrip()
 
 
 def _strip_premium(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -173,14 +185,16 @@ async def find_tasks(client: TodoistClient, filter: str = "today", limit: int = 
     tasks = data.get("results", []) if isinstance(data, dict) else data
     if not tasks:
         return f"По фильтру «{query}» задач нет."
-    return f"Задачи по фильтру «{query}» ({len(tasks)}):\n" + "\n".join(brief(t) for t in tasks)
+    люди = await people_module.загрузить(client)
+    return f"Задачи по фильтру «{query}» ({len(tasks)}):\n" + "\n".join(brief(t, люди) for t in tasks)
 
 
 async def get_task(client: TodoistClient, task_id: str,
                    include_subtasks: bool = True, include_comments: bool = False) -> str:
     """Карточка задачи + при желании подзадачи и комментарии."""
     task = await client.get(f"/tasks/{task_id}")
-    lines = [brief(task)]
+    люди = await people_module.загрузить(client)
+    lines = [brief(task, люди)]
     # где лежит задача — проект (и секция, если есть)
     place = ""
     if task.get("project_id"):
@@ -199,11 +213,20 @@ async def get_task(client: TodoistClient, task_id: str,
         lines.append(f"  проект: {place}")
     if task.get("description"):
         lines.append(f"  описание: {task['description']}")
+    if люди.общий(task.get("project_id")):
+        хозяин = люди.хозяин(task)
+        if люди.чужая(task):
+            lines.append(f"  чужая задача (ведёт {люди.имя(хозяин)}): читать и "
+                         f"комментировать можно, остальное — только сам человек или его агент")
     if include_subtasks:
         subs = await client.get_paginated("/tasks", params={"parent_id": task_id})
         if subs:
             lines.append(f"  подзадачи ({len(subs)}):")
-            lines += [f"    • {brief(s)}" for s in subs]
+            lines += [f"    • {brief(s, люди)}" for s in subs]
+            разные = people_module.исполнители_подзадач(люди, subs)
+            if len(разные) > 1:
+                lines.append("  общая карточка: подзадачи у "
+                             + ", ".join(люди.имя(u) for u in разные))
     if include_comments:
         comments = await client.get_paginated("/comments", params={"task_id": task_id})
         if comments:
@@ -230,9 +253,14 @@ async def get_structure(client: TodoistClient) -> str:
     by_project: dict[str, list[dict[str, Any]]] = {}
     for section in sections:
         by_project.setdefault(section["project_id"], []).append(section)
+    люди = await people_module.загрузить(client)
     lines = ["Проекты и секции (id нужен, чтобы класть задачу в проект/секцию):"]
     for project in projects:
-        lines.append(f"  [{project['id']}] {project['name']}")
+        mark = ""
+        if люди.общий(project["id"]):
+            mark = (f" — ОБЩИЙ, участники: {люди.список(project['id'])}; "
+                    f"у каждой задачи обязателен исполнитель (assignee)")
+        lines.append(f"  [{project['id']}] {project['name']}{mark}")
         for section in by_project.get(project["id"], []):
             lines.append(f"      └ секция [{section['id']}] {section['name']}")
     lines.append("Метки: " + ", ".join(f"@{label['name']}" for label in labels))
@@ -294,44 +322,169 @@ async def completed_history(client: TodoistClient, since: str, until: str,
     return "\n".join(lines)
 
 
+# ── общий проект: два замка ──────────────────────────────────────────────────
+#
+# Когда в общем проекте работают двое и у каждого свой агент, правило в тексте
+# не держит: модель его забывает. Держит отказ инструмента. Замков два:
+#
+#   1. исполнитель — у каждой задачи общего проекта; без него задача не
+#      создаётся, не переезжает туда, и снять его нельзя;
+#   2. чужое — задачу другого человека агент читает и комментирует, но не
+#      закрывает, не удаляет, не переносит и не правит.
+#
+# Задача с тем же текстом, уже стоящая в общем проекте, — тоже отказ: второй
+# агент, раскладывая ту же встречу, иначе поставит её заново.
+#
+# Todoist принимает исполнителя только как `assignee_id`. Поле `responsible_uid`
+# (так оно называется в ответе) при записи молча выбрасывается — проверено
+# вживую 31.10.2026: задача создалась, исполнителя нет, ошибки нет.
+
+
+def _чужая_отказ(люди: Люди, task: dict[str, Any], действие: str) -> str | None:
+    if not люди.чужая(task):
+        return None
+    кто = люди.имя(люди.хозяин(task))
+    return (f"Не сделал: задача [{task.get('id')}] «{task.get('content', '')}» — "
+            f"не твоя, её ведёт {кто}. {действие} её может только сам человек или его "
+            f"агент. Можно оставить комментарий (add_comment) — его увидят оба.")
+
+
+async def _проект_задачи(client: TodoistClient, payload: dict[str, Any]) -> str | None:
+    """В какой проект ляжет задача: прямо, через родителя или через секцию."""
+    if payload.get("project_id"):
+        return str(payload["project_id"])
+    if payload.get("parent_id"):
+        parent = await client.get(f"/tasks/{payload['parent_id']}")
+        return str(parent.get("project_id") or "") or None
+    if payload.get("section_id"):
+        section = await client.get(f"/sections/{payload['section_id']}")
+        return str(section.get("project_id") or "") or None
+    return None
+
+
+def _исполнитель(люди: Люди, project_id: str | None, assignee: Any,
+                 обязателен: bool) -> tuple[str | None, str | None]:
+    """(uid, отказ). В личном проекте исполнителя нет и не нужен."""
+    слово = str(assignee or "").strip()
+    if not люди.общий(project_id):
+        if слово and слово.lower() not in people_module.НИКТО:
+            return None, (f"Не сделал: проект личный, исполнителя в нём не бывает "
+                          f"(assignee={слово!r}). Уберите assignee или положите задачу в общий проект.")
+        return None, None
+    if not слово:
+        if обязателен:
+            return None, (f"Не сделал: проект общий (участники: {люди.список(project_id)}), "
+                          f"и у каждой задачи в нём обязателен исполнитель. "
+                          f"Передайте assignee — имя участника или «я».")
+        return None, None
+    if слово.lower() in people_module.НИКТО:
+        return None, "Не сделал: в общем проекте исполнителя снять нельзя — можно только сменить."
+    uid = люди.найти(project_id, слово)
+    if not uid:
+        return None, (f"Не сделал: «{слово}» нет среди участников проекта "
+                      f"({люди.список(project_id)}). Назовите участника как в списке или «я».")
+    return uid, None
+
+
+def _текст_для_сверки(content: str) -> str:
+    # «* » в начале — пометка Todoist «без галочки», к смыслу не относится
+    return " ".join(content.lower().lstrip("* ").split())
+
+
+async def _уже_стоит(client: TodoistClient, люди: Люди, project_id: str,
+                     content: str) -> str | None:
+    """Отказ, если в общем проекте уже открыта задача с тем же текстом."""
+    цель = _текст_для_сверки(content)
+    открытые = await client.get_paginated("/tasks", params={"project_id": project_id,
+                                                            "limit": 200}, cap=1000)
+    for task in открытые:
+        if _текст_для_сверки(task.get("content", "")) == цель:
+            return (f"Не создал: в общем проекте такая задача уже стоит — {brief(task, люди)}. "
+                    f"Похоже, её уже разложил другой участник; новую ставить не нужно.")
+    return None
+
+
+async def _проверить_новую(client: TodoistClient, люди: Люди,
+                           item: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Тело новой задачи с исполнителем — или отказ словами."""
+    payload = _task_payload(item)
+    if not люди.общие and not item.get("assignee"):
+        return payload, None  # общих проектов нет — проверять нечего, лишний запрос не нужен
+    project_id = await _проект_задачи(client, payload)
+    uid, отказ = _исполнитель(люди, project_id, item.get("assignee"), обязателен=True)
+    if отказ:
+        return payload, отказ
+    if uid:
+        payload["assignee_id"] = uid
+        отказ = await _уже_стоит(client, люди, project_id, payload.get("content", ""))
+    return payload, отказ
+
+
 # ── запись: задачи ─────────────────────────────────────────────────────────────
 
 async def add_task(client: TodoistClient, content: str, **fields: Any) -> str:
     """Создать задачу или подзадачу (parent_id). due_string — словами по-русски."""
-    payload = _task_payload({"content": content, **fields})
+    люди = await people_module.загрузить(client)
+    payload, отказ = await _проверить_новую(client, люди, {"content": content, **fields})
+    if отказ:
+        return отказ
     task, note = await _create_one(client, payload)
     kind = "подзадача" if payload.get("parent_id") else "задача"
-    return f"Создана {kind}: {brief(task)}{note}"
+    return f"Создана {kind}: {brief(task, люди)}{note}"
 
 
 async def add_tasks_bulk(client: TodoistClient, tasks: list[dict[str, Any]]) -> str:
     """Создать пачку задач/подзадач. Каждый элемент — {content, ...поля}."""
     if not tasks:
         return "Пустой список — нечего создавать."
-    lines = []
-    count = 0
-    for item in tasks:
-        content = item.get("content")
-        if not content:
+    # Сначала проверяется вся пачка, потом создаётся. Иначе отказ на седьмой
+    # задаче оставил бы шесть созданных — и повтор пачки их задублировал бы.
+    люди = await people_module.загрузить(client)
+    готовые: list[dict[str, Any]] = []
+    отказы: list[str] = []
+    for n, item in enumerate(tasks, 1):
+        if not item.get("content"):
             continue
-        payload = _task_payload(item)
+        payload, отказ = await _проверить_новую(client, люди, item)
+        if отказ:
+            отказы.append(f"  {n}. «{item['content']}»: {отказ}")
+        else:
+            готовые.append(payload)
+    if отказы:
+        return ("Пачка не создана ни одной задачей — исправьте и пришлите заново:\n"
+                + "\n".join(отказы))
+    lines = []
+    for payload in готовые:
         task, note = await _create_one(client, payload)
-        lines.append(brief(task) + note)
-        count += 1
-    return f"Создано задач: {count}\n" + "\n".join(lines)
+        lines.append(brief(task, люди) + note)
+    return f"Создано задач: {len(lines)}\n" + "\n".join(lines)
 
 
 async def update_task(client: TodoistClient, task_id: str, **fields: Any) -> str:
     """Изменить задачу: срок (due_string), приоритет, метки, текст, длительность."""
     payload = _task_payload(fields)
     payload.pop("parent_id", None)  # смену родителя делает move_task
+    люди = await people_module.загрузить(client)
+    if люди.общие:
+        current = await client.get(f"/tasks/{task_id}")
+        отказ = _чужая_отказ(люди, current, "Менять")
+        if отказ:
+            return отказ
+        if fields.get("assignee") not in (None, ""):
+            uid, отказ = _исполнитель(люди, current.get("project_id"), fields["assignee"],
+                                      обязателен=False)
+            if отказ:
+                return отказ
+            payload["assignee_id"] = uid
+    elif fields.get("assignee") not in (None, ""):
+        return "Не сделал: общих проектов нет, исполнителя назначать некому."
     # Дедлайн на бесплатном тарифе роняет ВЕСЬ запрос (403 Premium only),
     # то есть без этой строки не менялось бы вообще ничего — ни срок, ни текст.
     payload, note = _strip_premium(payload)
     if not payload:
         return "Нечего менять — не передано ни одного поля." + note
     task = await client.post(f"/tasks/{task_id}", json=payload)
-    return f"Обновлено: {brief(task)}{note}"
+    return f"Обновлено: {brief(task, люди)}{note}"
 
 
 async def complete_task(client: TodoistClient, task_id: str, reopen: bool = False) -> str:
@@ -349,7 +502,11 @@ async def complete_task(client: TodoistClient, task_id: str, reopen: bool = Fals
         task = await client.get(f"/tasks/{task_id}")
         recurring = bool((task.get("due") or {}).get("is_recurring"))
     except TodoistError:
-        pass
+        task = {}
+    if task:
+        отказ = _чужая_отказ(await people_module.загрузить(client), task, "Закрыть")
+        if отказ:
+            return отказ
     await client.post(f"/tasks/{task_id}/close")
     if recurring:
         return (f"Повторяющаяся задача {task_id} отмечена — Todoist передвинул её "
@@ -358,8 +515,14 @@ async def complete_task(client: TodoistClient, task_id: str, reopen: bool = Fals
 
 
 async def move_task(client: TodoistClient, task_id: str, project_id: str | None = None,
-                    section_id: str | None = None, parent_id: str | None = None) -> str:
-    """Перенести задачу в проект/секцию или сделать её подзадачей (parent_id)."""
+                    section_id: str | None = None, parent_id: str | None = None,
+                    assignee: str | None = None) -> str:
+    """Перенести задачу в проект/секцию или сделать её подзадачей (parent_id).
+
+    В общий проект задача едет только с исполнителем: свой у неё уже есть
+    или передан `assignee`. Исполнителя ставим после переезда — до него
+    человек может ещё не быть участником проекта, где задача лежит сейчас.
+    """
     body: dict[str, Any] = {}
     if project_id:
         body["project_id"] = project_id
@@ -369,7 +532,27 @@ async def move_task(client: TodoistClient, task_id: str, project_id: str | None 
         body["parent_id"] = parent_id
     if not body:
         return "Не указано, куда переносить (project_id / section_id / parent_id)."
+    люди = await people_module.загрузить(client)
+    uid = None
+    if люди.общие:
+        current = await client.get(f"/tasks/{task_id}")
+        отказ = _чужая_отказ(люди, current, "Переносить")
+        if отказ:
+            return отказ
+        target = await _проект_задачи(client, body)
+        if люди.общий(target):
+            uid, отказ = _исполнитель(люди, target, assignee,
+                                      обязателен=not current.get("responsible_uid"))
+            if отказ:
+                return отказ
+        elif assignee:
+            return "Не сделал: проект назначения личный, исполнителя в нём не бывает."
+    elif assignee:
+        return "Не сделал: общих проектов нет, исполнителя назначать некому."
     await client.post(f"/tasks/{task_id}/move", json=body)
+    if uid:
+        await client.post(f"/tasks/{task_id}", json={"assignee_id": uid})
+        return f"Задача {task_id} перенесена, исполнитель — {люди.имя(uid)}."
     return f"Задача {task_id} перенесена."
 
 
@@ -377,6 +560,11 @@ async def delete_task(client: TodoistClient, task_id: str, confirm: bool = False
     """Удалить задачу безвозвратно. Только при confirm=true (каскадом удалит подзадачи)."""
     if not confirm:
         return "Удаление не выполнено: нужен confirm=true. Удаление необратимо."
+    люди = await people_module.загрузить(client)
+    if люди.общие:
+        отказ = _чужая_отказ(люди, await client.get(f"/tasks/{task_id}"), "Удалить")
+        if отказ:
+            return отказ
     await client.delete(f"/tasks/{task_id}")
     return f"Задача {task_id} удалена."
 
@@ -384,7 +572,16 @@ async def delete_task(client: TodoistClient, task_id: str, confirm: bool = False
 async def quick_add(client: TodoistClient, text: str) -> str:
     """Создать задачу одной строкой на естественном языке (#проект, @метка, p1, «завтра»)."""
     task = await client.post("/tasks/quick", json={"text": text})
-    return f"Создано: {brief(task)}"
+    # Куда ляжет задача, решает разбор строки самим Todoist — узнать заранее
+    # нельзя. Поэтому замок исполнителя здесь стоит после: легла в общий
+    # проект без исполнителя — убираем и говорим, как поставить правильно.
+    люди = await people_module.загрузить(client)
+    if люди.общий(task.get("project_id")) and not task.get("responsible_uid"):
+        await client.delete(f"/tasks/{task['id']}")
+        return (f"Не создал: задача легла в общий проект (участники: "
+                f"{люди.список(task['project_id'])}) без исполнителя. "
+                f"Поставьте её через add_task с assignee.")
+    return f"Создано: {brief(task, люди)}"
 
 
 # ── запись: комментарии и структура ────────────────────────────────────────────

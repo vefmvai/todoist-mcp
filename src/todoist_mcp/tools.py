@@ -101,7 +101,7 @@ def _collect(args: dict[str, Any], names: tuple[str, ...]) -> dict[str, Any]:
 
 
 _TASK_FIELDS = ("project_id", "section_id", "parent_id", "due_string",
-                "deadline_date", "priority", "labels", "description", "duration")
+                "deadline_date", "priority", "labels", "description", "duration", "assignee")
 
 # Поля, общие для add_task и update_task. Объявляются один раз, потому что
 # именно их расхождение и было первой найденной поломкой.
@@ -112,6 +112,9 @@ _PRIORITY = Field("priority", "int", "Приоритет: 4 — самый вы�
 _LABELS = Field("labels", description="Метки через запятую, с @ или без")
 _DESCRIPTION = Field("description", description="Описание карточки — зачем это и что важно помнить")
 _DURATION = Field("duration", "int", "Оценка времени в минутах", feature="durations")
+_ASSIGNEE = Field("assignee", description=(
+    "Исполнитель — имя участника общего проекта или «я». В общем проекте "
+    "обязателен у каждой задачи; в личном не нужен. Участники видны в get_structure"))
 
 
 TOOLS: tuple[Tool, ...] = (
@@ -122,7 +125,9 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Показать задачи по фильтру на языке Todoist "
             "(today, overdue, 7 days, @дом, #Личное, no date & !@отпуск). "
-            "Главный способ узнать, что сейчас в делах."
+            "Главный способ узнать, что сейчас в делах. В общих проектах строка "
+            "показывает исполнителя (→ я, → имя); по нему фильтруют "
+            "«assigned to: me», «assigned to: others», «!assigned to: others»."
         ),
         fields=(
             Field("filter", description="Запрос Todoist; по умолчанию today", default="today"),
@@ -198,14 +203,16 @@ TOOLS: tuple[Tool, ...] = (
         summary="Создать задачу или подзадачу",
         description=(
             "Создать задачу, а через parent_id — подзадачу существующей. "
-            "Приоритет: 4 — самый высокий (p1 в приложении), 1 — обычный."
+            "Приоритет: 4 — самый высокий (p1 в приложении), 1 — обычный. "
+            "В общий проект — только с исполнителем (assignee), и только то, чего "
+            "там ещё нет: такая же задача, уже поставленная другим, — отказ."
         ),
         fields=(
             Field("content", required=True, description="Текст задачи"),
             Field("project_id", description="В какой проект положить"),
             Field("section_id", description="В какую секцию (столбец) положить"),
             Field("parent_id", description="id родительской задачи — сделать подзадачей"),
-            _DUE, _DEADLINE, _PRIORITY, _LABELS, _DESCRIPTION, _DURATION,
+            _ASSIGNEE, _DUE, _DEADLINE, _PRIORITY, _LABELS, _DESCRIPTION, _DURATION,
         ),
         run=lambda c, a: core.add_task(c, _text(a, "content"), **_collect(a, _TASK_FIELDS)),
     ),
@@ -214,11 +221,13 @@ TOOLS: tuple[Tool, ...] = (
         summary="Создать пачку задач одним вызовом",
         description=(
             "Создать несколько задач или подзадач за раз — например, разбить дело "
-            "на шаги. Каждый элемент — объект с теми же полями, что у add_task."
+            "на шаги. Каждый элемент — объект с теми же полями, что у add_task. "
+            "Пачка проверяется целиком до создания: одна задача без исполнителя "
+            "в общем проекте — не создаётся ни одна."
         ),
         fields=(
             Field("tasks", "json", required=True,
-                  description='Массив объектов: [{"content":"…","parent_id":"…","due_string":"завтра"}]'),
+                  description='Массив объектов: [{"content":"…","parent_id":"…","due_string":"завтра","assignee":"я"}]'),
         ),
         run=lambda c, a: core.add_tasks_bulk(c, a.get("tasks") or []),
     ),
@@ -228,17 +237,18 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Изменить существующую задачу: перенести срок (due_string), сменить "
             "приоритет, метки, текст, описание. Смену проекта или родителя делает "
-            "move_task. У повторяющихся задач срок меняется через due_string."
+            "move_task. У повторяющихся задач срок меняется через due_string. "
+            "Сменить исполнителя — assignee. Задачу другого человека менять нельзя."
         ),
         fields=(
             Field("task_id", required=True, description="id задачи"),
             Field("content", description="Новый текст задачи"),
-            _DUE, _DEADLINE, _PRIORITY, _LABELS, _DESCRIPTION, _DURATION,
+            _ASSIGNEE, _DUE, _DEADLINE, _PRIORITY, _LABELS, _DESCRIPTION, _DURATION,
         ),
         run=lambda c, a: core.update_task(
             c, _text(a, "task_id"),
             **_collect(a, ("content", "due_string", "deadline_date", "priority",
-                           "labels", "description", "duration")),
+                           "labels", "description", "duration", "assignee")),
         ),
     ),
     Tool(
@@ -246,7 +256,8 @@ TOOLS: tuple[Tool, ...] = (
         summary="Закрыть задачу или вернуть закрытую",
         description=(
             "Отметить задачу сделанной. Чтобы вернуть ошибочно закрытую — reopen=true. "
-            "У повторяющихся задач закрытие передвигает срок на следующий раз."
+            "У повторяющихся задач закрытие передвигает срок на следующий раз. "
+            "Задачу другого человека закрывает только он сам или его агент."
         ),
         fields=(
             Field("task_id", required=True, description="id задачи"),
@@ -259,19 +270,22 @@ TOOLS: tuple[Tool, ...] = (
         summary="Перенести задачу в другой проект, секцию или под родителя",
         description=(
             "Перенести задачу в другой проект или секцию либо сделать её подзадачей "
-            "(parent_id). Именно для смены места — срок и текст меняет update_task."
+            "(parent_id). Именно для смены места — срок и текст меняет update_task. "
+            "В общий проект задача без исполнителя едет только с assignee."
         ),
         fields=(
             Field("task_id", required=True, description="id задачи"),
             Field("project_id", description="Куда перенести — проект"),
             Field("section_id", description="Куда перенести — секция"),
             Field("parent_id", description="Под какую задачу подвесить"),
+            _ASSIGNEE,
         ),
         run=lambda c, a: core.move_task(
             c, _text(a, "task_id"),
             project_id=_text(a, "project_id") or None,
             section_id=_text(a, "section_id") or None,
             parent_id=_text(a, "parent_id") or None,
+            assignee=_text(a, "assignee") or None,
         ),
     ),
     Tool(
@@ -279,7 +293,8 @@ TOOLS: tuple[Tool, ...] = (
         summary="Удалить задачу безвозвратно",
         description=(
             "Удалить задачу насовсем, каскадом с подзадачами. Необратимо, поэтому "
-            "срабатывает только с confirm=true. Обычно задачи закрывают, а не удаляют."
+            "срабатывает только с confirm=true. Обычно задачи закрывают, а не удаляют. "
+            "Задачу другого человека удалить нельзя."
         ),
         fields=(
             Field("task_id", required=True, description="id задачи"),
@@ -292,7 +307,8 @@ TOOLS: tuple[Tool, ...] = (
         summary="Создать задачу одной строкой на естественном языке",
         description=(
             "Быстрый ввод в стиле Todoist, когда всё в одной фразе: "
-            "«Позвонить завтра в 15 #Личное @звонки p1»."
+            "«Позвонить завтра в 15 #Личное @звонки p1». "
+            "Для общего проекта не годится — там нужен исполнитель, ставьте через add_task."
         ),
         fields=(Field("text", required=True, description="Строка быстрого ввода"),),
         run=lambda c, a: core.quick_add(c, _text(a, "text")),

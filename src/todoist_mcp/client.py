@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any
 
@@ -42,6 +43,9 @@ class TodoistClient:
         token = token or os.environ.get("TODOIST_API_TOKEN", "")
         if not token:
             raise TodoistError("Нет токена Todoist: задайте переменную TODOIST_API_TOKEN.")
+        # Чей это клиент — без самого токена: по нему живёт кеш участников
+        # (`people.py`). Бот открывает новый клиент на каждый вызов, а люди те же.
+        self.key = hashlib.sha256(token.encode()).hexdigest()[:16]
         self._http = httpx.AsyncClient(
             base_url=API_BASE,
             headers={"Authorization": f"Bearer {token}"},
